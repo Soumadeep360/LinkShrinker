@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh" crossorigin="anonymous">
+  <title>URL Shortener</title>
+</head>
+<body>
+  <div class="container">
+    <h1>URL Shortener</h1>
+    
+    <!-- Form to create new short URL -->
+    <form action="/shortUrls" method="POST" class="my-4">
+      <div class="form-row">
+        <div class="col-md-5 mb-3">
+          <label for="fullUrl" class="sr-only">Full URL</label>
+          <input required placeholder="Enter Full URL" type="url" name="fullUrl" id="fullUrl" class="form-control">
+        </div>
+        
+        <!-- Custom URL input (optional) -->
+        <div class="col-md-3 mb-3">
+          <label for="customUrl" class="sr-only">Custom Short URL (optional)</label>
+          <input placeholder="Custom Short URL (optional)" type="text" name="customUrl" id="customUrl" class="form-control">
+        </div>
+
+        <!-- Expiration Date input (optional) -->
+        <div class="col-md-2 mb-3">
+          <label for="expirationDate" class="sr-only">Expiration Date (optional)</label>
+          <input placeholder="Expiration Date (optional)" type="date" name="expirationDate" id="expirationDate" class="form-control">
+        </div>
+
+        <div class="col-md-2">
+          <button class="btn btn-success btn-block" type="submit">Shrink</button>
+        </div>
+      </div>
+    </form>
+    
+    <!-- Display Table for Shortened URLs -->
+    <table class="table table-striped table-responsive">
+      <thead>
+        <tr>
+          <th>Full URL</th>
+          <th>Short URL</th>
+          <th>Clicks</th>
+          <th>Expiration Date</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% shortUrls.forEach(shortUrl => { %>
+          <tr>
+            <td><a href="<%= shortUrl.full %>" target="_blank"><%= shortUrl.full %></a></td>
+            
+            <!-- Short URL should be displayed properly with domain -->
+            <td><a href="/<%= shortUrl.short %>" target="_blank"><%= req.headers.host %>/<%= shortUrl.short %></a></td>
+            
+            <td><%= shortUrl.clicks %></td>
+            
+            <!-- Show expiration date if exists, otherwise display "Never" -->
+            <td><%= shortUrl.expiration ? new Date(shortUrl.expiration).toLocaleDateString() : 'Never' %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>
