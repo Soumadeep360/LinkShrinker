@@ -2,27 +2,83 @@ const express = require('express');
 const mongoose = require('mongoose');
 const ShortUrl = require('./models/shortUrl');
 const crypto = require('crypto');
-const moment = require('moment'); // For working with expiration dates
+const moment = require('moment');
+const { createClient } = require('redis');
+const { copyFileSync } = require('fs');
 const app = express();
+require('dotenv').config();
 
-mongoose.connect('mongodb://localhost/urlShortener', {
-  useNewUrlParser: true, 
+app.use(express.urlencoded({ extended: true }));
+app.set('view engine', 'ejs');
+
+// Connect to MongoDB Atlas
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
   useUnifiedTopology: true
+}).then(() => console.log('Connected to MongoDB Atlas'))
+  .catch(err => console.error('MongoDB Atlas connection error:', err));
+
+// Connect to Redis
+const redisClient = createClient({
+  password: process.env.REDIS_PASSWORD,
+  socket: {
+    host: process.env.REDIS_URI,
+    port: 15263
+  }
 });
 
-app.set('view engine', 'ejs');
-app.use(express.urlencoded({ extended: false }));
+async function connectToRedis() {
+  try {
+    await redisClient.connect();
+    console.log('Connected to Redis');
+  } catch (error) {
+    console.error('Error connecting to Redis:', error);
+  }
+}
 
-// // Generate function that combines timestamp with random bytes
-// function generateShortUrl() {
-//   const currentTimestamp = Date.now().toString(36); // Convert timestamp to base36
-//   const randomString = crypto.randomBytes(4).toString('hex'); // Generate random bytes
-//   return `${currentTimestamp}-${randomString}`; // Combine for the short URL
-// }
+connectToRedis();
+
+redisClient.on('error', (error) => {
+  console.error('Redis error:', error);
+});
+
+async function checkCache(req, res, next) {
+  try {
+    const { shortUrl } = req.params;
+
+    // Check if the URL data is in Redis cache
+    let cachedData = await redisClient.get(shortUrl);
+    if (cachedData !== null) {
+      const cachedDataParsed = JSON.parse(cachedData);
+
+      // Check if the cached link has expired
+      if (cachedDataParsed.expiration && new Date() > new Date(cachedDataParsed.expiration)) {
+        return res.status(410).send('This link has expired (from cache).');
+      }
+
+      // If the link is valid, update the click count in MongoDB
+      const shortUrlDoc = await ShortUrl.findOne({ short: shortUrl });
+      if (shortUrlDoc) {
+        shortUrlDoc.clicks += 1;
+        shortUrlDoc.lastAccessed = new Date();
+        await shortUrlDoc.save();
+      }
+
+      // Redirect to the original URL from the cache
+      return res.redirect(cachedDataParsed.full);
+    }
+
+    // If not in cache, proceed to the next middleware
+    next();
+  } catch (error) {
+    console.error('Error in checkCache middleware:', error);
+    return res.status(500).send('Internal Server Error');
+  }
+}
+
 
 const base62Chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-// Helper function to convert a number to Base62
 function base62Encode(num) {
   let result = '';
   while (num > 0) {
@@ -32,62 +88,47 @@ function base62Encode(num) {
   return result || '0';
 }
 
-// Generate function that combines Base62 encoded timestamp and random bytes for a fixed-length short URL (7 characters)
 function generateShortUrl() {
-  // Convert current timestamp to Base62 and take only the last 3 characters for compactness
   const timestamp = Date.now();
-  const timestampPart = base62Encode(timestamp).slice(-3); // Taking last 3 characters of Base62 timestamp
-
-  // Generate 3 random bytes (24 bits) and convert to Base62 (4 Base62 characters)
-  const randomBytes = crypto.randomBytes(3); // 3 random bytes (24 bits)
+  const timestampPart = base62Encode(timestamp).slice(-3);
+  const randomBytes = crypto.randomBytes(3);
   let randomPart = base62Encode(parseInt(randomBytes.toString('hex'), 16));
-
-  // Ensure randomPart is exactly 4 characters (pad if necessary)
   randomPart = randomPart.padStart(4, '0').slice(-4);
-
-  // Combine the timestamp part and the random part (total length: 3 + 4 = 7 characters)
   return `${timestampPart}${randomPart}`;
 }
 
-// Home route to list all shortened URLs
+// Render the main page with the list of shortened URLs
 app.get('/', async (req, res) => {
   const shortUrls = await ShortUrl.find();
-  res.render('index', { shortUrls: shortUrls });
+  res.render('index', { shortUrls: shortUrls, host: req.headers.host, errorMessage: null });
 });
 
-// Optimized Route to create new short URLs with efficient collision handling
+// Create a new short URL
 app.post('/shortUrls', async (req, res) => {
   const { fullUrl, customUrl, expirationDate } = req.body;
-   // Check if the full URL already exists
-   let existingShortUrl = await ShortUrl.findOne({ full: fullUrl });
-  
-   if (existingShortUrl) {
-     // If the full URL is already present, reuse the existing short URL
-     return res.redirect('/');
-   }
 
   let short;
-  
   if (customUrl) {
-    // If the user provides a custom URL, use it and check for collision
     short = customUrl;
     const existingShortUrl = await ShortUrl.findOne({ short: short });
     if (existingShortUrl) {
-      return res.status(400).send('Custom URL is already taken. Please choose another one.');
+      // Render with an error message if the custom URL is taken
+      const shortUrls = await ShortUrl.find();
+      return res.render('index', {
+        shortUrls: shortUrls,
+        host: req.headers.host,
+        errorMessage: 'Custom URL is already taken.'
+      });
     }
   } else {
-    // Generate a short URL and handle collision
     let isUnique = false;
     while (!isUnique) {
       short = generateShortUrl();
       const existingShortUrl = await ShortUrl.findOne({ short: short });
-      if (!existingShortUrl) {
-        isUnique = true; // Stop retrying if no collision is found
-      }
+      if (!existingShortUrl) isUnique = true;
     }
   }
 
-  // Create the new short URL after confirming no collision
   const newShortUrl = new ShortUrl({
     full: fullUrl,
     short: short,
@@ -99,29 +140,51 @@ app.post('/shortUrls', async (req, res) => {
   res.redirect('/');
 });
 
-// Route to handle short URL redirects
-app.get('/:shortUrl', async (req, res) => {
-  const shortUrl = await ShortUrl.findOne({ short: req.params.shortUrl });
-  
-  if (shortUrl == null) return res.sendStatus(404);
+// Redirect to the full URL and increment the click count
+app.get('/:shortUrl', checkCache, async (req, res) => {
+  const { shortUrl } = req.params;
 
-  // Check if the URL has expired
-  if (shortUrl.expiration && new Date() > shortUrl.expiration) {
+  const shortUrlDoc = await ShortUrl.findOne({ short: shortUrl });
+  if (shortUrlDoc == null) return res.sendStatus(404);
+
+  // Check if the link has expired
+  if (shortUrlDoc.expiration && new Date() > shortUrlDoc.expiration) {
     return res.status(410).send('This link has expired.');
   }
 
-  // Increment click count and save the updated document
-  shortUrl.clicks++;
-  shortUrl.lastAccessed = new Date(); // Track the last time the URL was accessed
-  await shortUrl.save();
+  // Increment click count and update the last accessed time
+  shortUrlDoc.clicks += 1;
+  shortUrlDoc.lastAccessed = new Date();
+  await shortUrlDoc.save();
 
-  res.redirect(shortUrl.full);
+  // Cache the updated short URL data in Redis, including the click count
+  const cacheData = JSON.stringify({
+    full: shortUrlDoc.full,
+    expiration: shortUrlDoc.expiration,
+    clicks: shortUrlDoc.clicks // Include the updated click count in cache
+  });
+  await redisClient.set(shortUrl, cacheData);
+
+  console.log(`Redirecting to: ${shortUrlDoc.full}, Clicks: ${shortUrlDoc.clicks}`);
+
+  // Redirect to the original URL
+  return res.redirect(shortUrlDoc.full);
 });
 
-app.listen(process.env.PORT || 5000);
 
+// Delete route to remove a short URL by ID
+app.post('/shortUrls/:id/delete', async (req, res) => {
+  const { id } = req.params;
 
-/*
-generateShortUrl(): can generate 3.52 trillion possible combinations with fixed length of 7 characters..
-*/
+  try {
+    await ShortUrl.findByIdAndDelete(id);
+    res.redirect('/');
+  } catch (error) {
+    console.error('Error deleting URL:', error);
+    res.status(500).send('Error deleting URL.');
+  }
+});
 
+app.listen(process.env.PORT || 5000, () => {
+  console.log('Server is running on port 5000');
+});
