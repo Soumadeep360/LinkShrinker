@@ -66,16 +66,8 @@ This is a **URL Shortener** web application that allows users to create short, e
 ## 📈 Performance Optimization
 - Uses **Redis** for caching frequently accessed URLs, significantly reducing response time.
 - MongoDB for scalable and efficient data storage.
-- Indexing in MongoDB ensures quick lookups for existing short URLs.
 
 ## 🛡️ Security
 - Environment variables are used to protect sensitive information like database credentials.
-- Input validation is implemented to prevent invalid URLs and ensure data integrity.
-
-## 🤝 Contributing
-Contributions are welcome! Feel free to open issues or submit pull requests.
-
-## 📝 License
-This project is licensed under the MIT License.
 
 ---
